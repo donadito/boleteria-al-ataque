@@ -16,6 +16,7 @@ class Bot:
     cantidad: int = 4 # Compran el máximo permitido
 
 @dataclass
+@dataclass
 class Seccion:
     nombre: str
     inventario: int
@@ -23,6 +24,7 @@ class Seccion:
     calidad: float
     precio_vigente: float = 0.0
     ventas_ultimo_minuto: int = 0
+    pagos_fallidos_retenidos: int = 0 # nueva propiedad para mapear los boletos retenidos por fallos que regresan al inventario
     
     def __post_init__(self):
         self.precio_vigente = self.precio_base
