@@ -28,9 +28,12 @@ class Seccion:
     precio_vigente: float = 0.0
     ventas_ultimo_minuto: int = 0
     pagos_fallidos_retenidos: int = 0 # nueva propiedad para mapear los boletos retenidos por fallos que regresan al inventario
+    liberado_fase: int = 0 # boletos que la fase en curso liberó a esta sección; es la base del ritmo objetivo
 
     def __post_init__(self):
         self.precio_vigente = self.precio_base
+        if self.liberado_fase == 0:
+            self.liberado_fase = self.inventario
 
 # (nombre, capacidad, precio base, calidad q_k)
 CATALOGO_SECCIONES = [

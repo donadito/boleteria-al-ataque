@@ -18,9 +18,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from ..rng.lcg import MersenneTwisterGenerator
+from ..rng.lcg import MersenneTwisterGenerator, crear_generador_base
 from ..rng.polar import PolarGenerator
 from ..rng.rechazo import RechazoGenerator
+from ..rng.truncada import InversaGenerator
 
 SEMILLA = 13579
 N_PLOT = 200_000
@@ -31,6 +32,7 @@ def _generadores():
     return {
         "Polar": PolarGenerator(MersenneTwisterGenerator(SEMILLA)),
         "Rechazo": RechazoGenerator(MersenneTwisterGenerator(SEMILLA)),
+        "Inversa": InversaGenerator(MersenneTwisterGenerator(SEMILLA)),
     }
 
 
@@ -99,5 +101,60 @@ def generar_figuras(dir_salida=DIR_SALIDA):
     return rutas
 
 
+def figura_reticulo(dir_salida=DIR_SALIDA, n_ternas=30000):
+    """
+    El reticulo de los generadores uniformes: la evidencia VISUAL de por que
+    RANDU reprueba la prueba serial en 3D y los otros no.
+
+    Cada punto es una terna consecutiva (u_i, u_{i+1}, u_{i+2}). Un generador
+    sano llena el cubo de forma pareja. RANDU no: sus estados satisfacen
+    exactamente
+
+        x_{n+2} - 6*x_{n+1} + 9*x_n = 0   (mod m)
+
+    asi que todas sus ternas viven en la familia de planos de normal
+    (9, -6, 1), que resultan ser solo 15 dentro del cubo unitario.
+
+    El angulo de camara no se elige a ojo: para ver los planos DE CANTO hay que
+    mirar en una direccion contenida en ellos, es decir perpendicular a su
+    normal. Con elevacion 0 la direccion de camara es (cos a, sin a, 0), y la
+    condicion 9*cos(a) - 6*sin(a) = 0 da a = atan(9/6) = 56.31 grados. Desde
+    cualquier otro angulo la nube de RANDU se ve tan sana como las otras dos,
+    que es justamente por lo que este defecto sobrevivio una decada en
+    produccion.
+    """
+    os.makedirs(dir_salida, exist_ok=True)
+    nombres = ["mt", "minstd", "randu"]
+    titulos = {"mt": "Mersenne Twister", "minstd": "LCG propio (MINSTD)",
+               "randu": "RANDU (control defectuoso)"}
+
+    azimut = float(np.degrees(np.arctan2(9.0, 6.0)))  # 56.31 grados
+
+    fig = plt.figure(figsize=(13, 4.6))
+    for i, nombre in enumerate(nombres, start=1):
+        ternas = crear_generador_base(nombre, SEMILLA).uniform(3 * n_ternas).reshape(-1, 3)
+
+        ax = fig.add_subplot(1, len(nombres), i, projection="3d")
+        ax.scatter(ternas[:, 0], ternas[:, 1], ternas[:, 2],
+                   s=0.35, alpha=0.35, color="#4c72b0", edgecolors="none")
+        ax.view_init(elev=0, azim=azimut)
+        ax.set_xlabel("$u_i$", fontsize=8)
+        ax.set_ylabel("$u_{i+1}$", fontsize=8)
+        ax.set_zlabel("$u_{i+2}$", fontsize=8)
+        ax.set_title(titulos[nombre], fontsize=10)
+        ax.tick_params(labelsize=6)
+
+    fig.suptitle(f"Ternas consecutivas vistas desde azimut {azimut:.1f}$^\\circ$, "
+                 "elevacion 0$^\\circ$: los planos de RANDU quedan de canto",
+                 fontsize=12)
+    fig.tight_layout()
+    ruta = os.path.join(dir_salida, "reticulo_3d.png")
+    fig.savefig(ruta, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Figura guardada: {ruta}")
+    return ruta
+
+
 if __name__ == "__main__":
     generar_figuras()
+    figura_reticulo()

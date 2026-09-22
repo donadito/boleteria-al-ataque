@@ -18,11 +18,10 @@ cuantas compras ocurren) no contamine a los demas:
     seed + 2 -> uniformes de generacion (cantidad de boletos, desfase de bots)
     seed + 3 -> uniformes de pago dentro del motor
 
-NOTA: el motor todavia no cablea correr_fase (Frente 2), asi que este harness
-maneja el avance temporal por minutos usando los metodos publicos ya existentes
-(procesar_cola_espera, ejecutar_decision_compra via la cola, y el controlador de
-precios). Cuando correr_fase quede listo, basta reemplazar _correr_replica por
-una llamada a motor.correr_simulacion_completa.
+El procesamiento lo lleva el motor secuencial
+(MotorSimulacion.correr_simulacion_completa), que ordena los arreglos de
+tiempos y los recorre: este archivo solo arma los streams, inyecta las llegadas
+de cada fase y acumula los resultados.
 
 Uso:
     python -m experimentos.exp2_precios
@@ -40,10 +39,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from boleteria.rng.lcg import MersenneTwisterGenerator
 from boleteria.rng.polar import PolarGenerator
 from boleteria.rng.poisson import LlegadasNHPP
-from boleteria.modelo.calendario import DURACION_FASE, obtener_fases
+from boleteria.modelo.calendario import obtener_fases
 from boleteria.modelo.entidades import crear_secciones
 from boleteria.modelo.generacion import crear_flota_bots, generar_llegadas
-from boleteria.modelo.motor import MotorSimulacion
+from boleteria.modelo.motor import UN_SEGUNDO, MotorSimulacion
 from boleteria.modelo.precios import ControladorPrecios
 
 N_REPLICAS = 200
@@ -51,64 +50,33 @@ SEMILLA_BASE = 1000          # semillas estaticas: SEMILLA_BASE + 4*k por replic
 ETA_DINAMICO = 0.10
 DIR_SALIDA = "resultados"
 
-# Cada cuanto (en minutos de simulacion) el controlador recalcula el precio.
-# Es la velocidad de reaccion del sistema de precios dinamico. Es CRITICO para el
-# experimento: los 22,000 bots vacian el inventario en la rafaga de ~5 s inicial,
-# asi que con un paso de 1 minuto el precio no alcanza a reaccionar y el precio
-# dinamico produce el MISMO ingreso que el fijo (diferencia 0). Con un paso mas
-# fino (1 segundo) el precio sube durante la rafaga y el dinamico captura mas
-# ingreso. Se deja como parametro para que el grupo lo afine junto con los topes
-# de precio (Frente 2) hasta aterrizar en el optimo analitico de ~18.47 M.
-UN_SEGUNDO = 1.0 / 60.0
+# Ventana de control del precio dinamico, en minutos de simulacion. Es la
+# velocidad de reaccion del sistema de precios y hay que elegirla a la escala
+# del evento que se quiere controlar: los bots vacian el inventario de una fase
+# en unos 15 s de reloj simulado (500 cajas x 3 s de checkout), asi que una
+# ventana de 1 minuto no alcanza a ver el ataque y una de 1 segundo da ~15
+# oportunidades de ajuste durante el vaciado. El objetivo del controlador escala
+# con esta ventana (ver modelo/precios.py), asi que cambiarla mueve la velocidad
+# de reaccion, no la definicion de "ir a buen ritmo".
 PASO_PRECIO = UN_SEGUNDO
 
 
-def _liberar_inventario(secciones, liberacion):
-    """Agrega a las secciones persistentes el inventario que libera la fase."""
-    for sec, delta in zip(secciones, crear_secciones(liberacion)):
-        sec.inventario += delta.inventario
-
-
-def _procesar_fase(motor, controlador, secciones, llegadas, fase, paso=PASO_PRECIO):
+def _correr_replica(seed, eta, paso=PASO_PRECIO, politica=None, motor_clase=MotorSimulacion):
     """
-    Avanza la fase en pasos de `paso` minutos: encola las llegadas del paso, drena
-    la cola con la politica FIFO del motor y actualiza los precios en cada ventana.
-    El tamano de `paso` fija la velocidad de reaccion del precio dinamico.
+    Corre la simulacion completa (3 fases + devoluciones) con una semilla y una
+    politica de precio.
+
+    `motor_clase` permite intercambiar el motor sin tocar nada mas: los flujos
+    aleatorios, las llegadas y el inventario se construyen igual, asi que dos
+    motores con la misma semilla ven exactamente la misma realidad y solo
+    difieren en como la procesan (ver experimentos/exp4_motores.py).
     """
-    # Cada fase es un evento de venta nuevo: cola y slots de checkout frescos.
-    motor.cola_espera = []
-    motor.relojes_checkout = []
-    motor.inventario_global = sum(sec.inventario for sec in secciones)
-
-    llegadas.sort(key=lambda e: e.t_llegada)
-    i, n = 0, len(llegadas)
-    t = fase.hora_apertura
-    fin = fase.hora_apertura + DURACION_FASE
-
-    while t < fin:
-        while i < n and llegadas[i].t_llegada < t + paso:
-            motor.cola_espera.append(llegadas[i])
-            i += 1
-
-        motor.procesar_cola_espera(t, secciones)
-        controlador.actualizar_precios(secciones, fase.liberacion_inventario)
-
-        # Sin inventario ya no hay ventas posibles; sin llegadas ni cola, terminamos.
-        if motor.inventario_global <= 0:
-            break
-        if i >= n and not motor.cola_espera:
-            break
-        t += paso
-
-
-def _correr_replica(seed, eta, paso=PASO_PRECIO):
-    """Corre la simulacion completa (3 fases) con una semilla y una politica de precio."""
     gen_normal = PolarGenerator(MersenneTwisterGenerator(seed))
     nhpp = LlegadasNHPP(MersenneTwisterGenerator(seed + 1))
     gen_generacion = MersenneTwisterGenerator(seed + 2)   # boletos por compra + bots
     gen_pago = MersenneTwisterGenerator(seed + 3)         # pagos dentro del motor
 
-    motor = MotorSimulacion(gen_normal, gen_pago)
+    motor = motor_clase(gen_normal, gen_pago, paso_precio=paso, politica=politica)
     controlador = ControladorPrecios(eta=eta)
 
     fases = obtener_fases()
@@ -116,12 +84,11 @@ def _correr_replica(seed, eta, paso=PASO_PRECIO):
     total_bots = max(fase.bots_admitidos for fase in fases)
     flota = crear_flota_bots(total_bots, gen_normal)
 
-    for fase in fases:
-        _liberar_inventario(secciones, fase.liberacion_inventario)
-        llegadas = generar_llegadas(fase, flota, nhpp, gen_normal, gen_generacion)
-        _procesar_fase(motor, controlador, secciones, llegadas, fase, paso)
-
-    return dict(motor.estadisticas)
+    motor.correr_simulacion_completa(
+        fases, secciones, controlador,
+        lambda fase: generar_llegadas(fase, flota, nhpp, gen_normal, gen_generacion),
+    )
+    return motor.resumen()
 
 
 def correr_experimento(n_replicas=N_REPLICAS):

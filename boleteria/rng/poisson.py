@@ -46,7 +46,13 @@ class LlegadasNHPP:
         (donde lambda cae de miles a decenas en dos horas) y gruesa en la cola, porque
         una sola cota global rechazaría casi todos los candidatos del período tranquilo.
         """
-        cortes = [t_apertura + d for d in list(np.arange(0.0, 121.0, 10.0)) + [480.0, duracion]]
+        # Los cortes internos son fijos (cada 10 min durante las dos horas del
+        # pico, luego uno en 480), pero hay que recortarlos a la duracion real y
+        # ordenarlos: si la fase dura menos de 480 min, dejarlos tal cual
+        # produce un tramo con b < a -- que se salta en silencio -- y otro que
+        # se pasa del cierre, generando llegadas fuera de la ventana pedida.
+        internos = [d for d in list(np.arange(0.0, 121.0, 10.0)) + [480.0] if 0.0 <= d < duracion]
+        cortes = sorted(set(t_apertura + d for d in internos)) + [t_apertura + duracion]
         intensidad = lambda t: self.intensidad(t, t_apertura, pool)
 
         llegadas = []
